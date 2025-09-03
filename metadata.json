@@ -1,0 +1,5 @@
+{
+  "name": "To Do To Day EoD",
+  "description": "A local-first PWA for fast daily task capture and end-of-day reporting, designed for a single user. It features smart task rollover, a compact UI, and an automated EOD builder.",
+  "requestFramePermissions": []
+}
