@@ -1,825 +1,562 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Task, Settings, TaskType, Category, Status, Priority, ExtendedStatus, STATUSES, AISuggestedTask } from './types';
-import * as db from './services/db';
-import { exportData } from './services/sync';
-import { TaskItem } from './components/TaskItem';
-import { PlusIcon, SettingsIcon, EODIcon, SearchIcon, ProjectIcon, LightbulbIcon, RefreshIcon, SparklesIcon, DownloadIcon } from './components/Icons';
-import { NewIdeaModal } from './components/NewIdeaModal';
-import { NewProjectModal } from './components/NewProjectModal';
-import { AddTaskModal } from './components/AddTaskModal';
-import { EODModal } from './components/EODModal';
-import { SettingsModal } from './components/SettingsModal';
-import { FilterSortControls } from './components/FilterSortControls';
-import { EditRecurringTaskModal } from './components/EditRecurringTaskModal';
-import { AINotetakerModal } from './components/AINotetakerModal';
-import { VibeAI } from './components/VibeAI';
-import { initializeFirebase, onAuthChange } from './services/firebase';
-import { listenToFirestoreChanges, syncLocalAndRemote, updateTaskInFirestore, addTaskToFirestore, deleteTaskInFirestore, updateSettingsInFirestore } from './services/firestoreSync';
-import { AuthDisplay } from './components/AuthDisplay';
-import { User } from 'firebase/auth';
-import { TaskDetailModal } from './components/TaskDetailModal';
-import { AIHelperModal } from './components/AIHelperModal';
-import { GettingStartedCard } from './components/GettingStartedCard';
+import React, { useState, useEffect, useMemo } from 'react';
 
-// Helper function to get today's date in YYYY-MM-DD format for the specified timezone
-const getTodayISO = (timeZone: string) => {
-    const date = new Date();
-    const year = date.toLocaleString('en-US', { year: 'numeric', timeZone });
-    const month = date.toLocaleString('en-US', { month: '2-digit', timeZone });
-    const day = date.toLocaleString('en-US', { day: '2-digit', timeZone });
-    return `${year}-${month}-${day}`;
-}
+const PINK = '#FF2D78';
+const CYAN = '#00F0FF';
+const BG = '#080810';
 
-const App: React.FC = () => {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [currentDate, setCurrentDate] = useState('');
-  const [filter, setFilter] = useState('');
-  const [showEODModal, setShowEODModal] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [showAddTaskModal, setShowAddTaskModal] = useState(false);
-  const [showNewIdeaModal, setShowNewIdeaModal] = useState(false);
-  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
-  const [showAINotetakerModal, setShowAINotetakerModal] = useState(false);
-  const [editRecurringState, setEditRecurringState] = useState<{ task: Task; changes: Partial<Task> } | null>(null);
-  const [isEODReady, setIsEODReady] = useState(false);
-  const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
-  const [detailedTaskId, setDetailedTaskId] = useState<string | null>(null);
-  const [helperTask, setHelperTask] = useState<Task | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const autosaveIntervalRef = useRef<number | null>(null);
-  
-  const [isLoading, setIsLoading] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
-  const [isFirebaseInitialized, setFirebaseInitialized] = useState(false);
-  const unsubscribeFromFirestore = useRef<(() => void) | null>(null);
+const H2: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <h2 className="text-xl md:text-2xl font-extrabold uppercase tracking-wider mb-4" style={{ color: CYAN }}>
+    {children}
+  </h2>
+);
 
-  const [sortConfig, setSortConfig] = useState<{ key: 'createdAt' | 'priority', direction: 'asc' | 'desc' }>({ key: 'createdAt', direction: 'desc' });
-  const [activeFilters, setActiveFilters] = useState<{
-      categories: Category[];
-      statuses: ExtendedStatus[];
-      priorities: Priority[];
-  }>({ categories: [], statuses: ['today'], priorities: [] });
+const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
+  <section className={`border border-white/10 rounded-xl p-5 md:p-6 mb-6 ${className}`} style={{ background: '#0f0f1a' }}>
+    {children}
+  </section>
+);
 
-  const refreshTasks = useCallback(async () => {
-      const allTasksFromDb = await db.getAllTasks();
-      // Simple migration for tasks without priority or taskType to ensure app stability
-      const tasksWithDefaults = allTasksFromDb.map(t => ({
-        ...t,
-        priority: t.priority || 'medium',
-        taskType: t.taskType || 'one-time'
-      }));
-      setTasks(tasksWithDefaults);
+const inputCls =
+  'w-full bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-[#00F0FF] placeholder-gray-500';
+
+const labelCls = 'block text-[11px] uppercase tracking-wider text-gray-400 mb-1 font-semibold';
+
+// ---------- Countdown ----------
+const Countdown: React.FC = () => {
+  const target = useMemo(() => new Date('2026-04-20T00:00:00').getTime(), []);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
-  
-  const handleRemoteUpdate = useCallback(async (remoteTasks: Task[], remoteSettings: Settings) => {
-    console.log("Received updates from Firestore...");
-    const localTasks = await db.getAllTasks();
-    const localTasksMap = new Map(localTasks.map(t => [t.id, t]));
-    const tasksToUpdateLocally: Task[] = [];
-
-    for (const remoteTask of remoteTasks) {
-        const localTask = localTasksMap.get(remoteTask.id);
-        if (!localTask || new Date(localTask.updatedAt) < new Date(remoteTask.updatedAt)) {
-            tasksToUpdateLocally.push(remoteTask);
-        }
-    }
-
-    if (tasksToUpdateLocally.length > 0) {
-        console.log(`Syncing ${tasksToUpdateLocally.length} tasks from Firestore...`);
-        await db.putTasks(tasksToUpdateLocally);
-        await refreshTasks();
-    }
-    
-    if (remoteSettings && (!settings || new Date(settings.kpis.initiativesProgress || 0) < new Date(remoteSettings.kpis.initiativesProgress || 1))) {
-        setSettings(remoteSettings);
-        await db.updateSettings(remoteSettings);
-    }
-  }, [refreshTasks, settings]);
-
-
-  // Effect for initializing Firebase and handling auth
-  useEffect(() => {
-    const initialized = initializeFirebase();
-    setFirebaseInitialized(initialized);
-
-    if (initialized) {
-        const unsubscribeAuth = onAuthChange(async (newUser) => {
-            setUser(newUser);
-            if (unsubscribeFromFirestore.current) {
-                unsubscribeFromFirestore.current();
-                unsubscribeFromFirestore.current = null;
-            }
-            if (newUser) {
-                console.log("User signed in. Starting sync...");
-                await syncLocalAndRemote(newUser.uid);
-                await refreshTasks(); // Refresh local state after initial sync
-                unsubscribeFromFirestore.current = listenToFirestoreChanges(newUser.uid, handleRemoteUpdate);
-            } else {
-                console.log("User signed out. Stopping sync.");
-            }
-        });
-        return () => unsubscribeAuth();
-    }
-  }, [handleRemoteUpdate, refreshTasks]);
-
-  const handleRollover = useCallback(async (todayISO: string, currentSettings: Settings) => {
-    const lastOpenedDate = currentSettings.lastOpenedDate;
-    
-    if (!lastOpenedDate || lastOpenedDate >= todayISO) {
-        if (!lastOpenedDate) {
-             await db.updateSettings({ lastOpenedDate: todayISO });
-        }
-        return;
-    }
-    
-    console.log(`Rollover from ${lastOpenedDate} to ${todayISO}`);
-    
-    const allTasks = await db.getAllTasks();
-    const newTasksForToday: Omit<Task, 'id'>[] = [];
-    const tasksForToday = allTasks.filter(t => t.date === todayISO);
-
-    // Carry over incomplete, non-recurring tasks. Muted tasks from yesterday get carried over and reset to 'normal'.
-    const carryOverTasks = allTasks.filter(t => 
-        t.date === lastOpenedDate && 
-        t.status !== 'done' && 
-        t.disposition !== 'retired' && 
-        t.disposition !== 'ignored' &&
-        (t.taskType === 'one-time' || t.taskType === 'project')
-    );
-    for (const task of carryOverTasks) {
-        const { id, ...rest } = task;
-        newTasksForToday.push({
-            ...rest,
-            date: todayISO,
-            disposition: 'normal', // Reset muted or normal tasks to normal for the new day
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        });
-    }
-    
-    const createRecurringTask = (template: Task): Omit<Task, 'id'> => {
-        const { id, ...rest } = template;
-        return {
-            ...rest,
-            date: todayISO,
-            status: 'todo',
-            disposition: 'normal',
-            comments: [], starred: false, asks: false, includeInEOD: false,
-            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        }
-    };
-    
-    const taskExists = (originId: string | undefined) => !originId || tasksForToday.some(t => t.originId === originId) || newTasksForToday.some(t => t.originId === originId);
-
-    const originEverydayTasks = allTasks.filter(t => t.taskType === 'everyday' && t.id === t.originId);
-    for (const template of originEverydayTasks) {
-        if (!taskExists(template.originId)) newTasksForToday.push(createRecurringTask(template));
-    }
-
-    const today = new Date(todayISO + 'T00:00:00');
-    const dayOfWeek = today.getDay();
-    const dayOfMonth = today.getDate();
-    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-
-
-    const originWeeklyTasks = allTasks.filter(t => t.taskType === 'weekly' && t.id === t.originId);
-    for (const template of originWeeklyTasks) {
-        if (template.daysOfWeek?.includes(dayOfWeek) && !taskExists(template.originId)) {
-            newTasksForToday.push(createRecurringTask(template));
-        }
-    }
-
-    const originMonthlyTasks = allTasks.filter(t => t.taskType === 'monthly' && t.id === t.originId);
-    for (const template of originMonthlyTasks) {
-        if (!template.dayOfMonth) continue;
-        
-        // Create task if it's the scheduled day, OR if it's the last day of the month
-        // and the scheduled day is later than the last day (e.g., scheduled for 31st, but month is Feb).
-        const shouldCreate = 
-            (template.dayOfMonth === dayOfMonth) || 
-            (dayOfMonth === lastDayOfMonth && template.dayOfMonth > lastDayOfMonth);
-            
-        if (shouldCreate && !taskExists(template.originId)) {
-            newTasksForToday.push(createRecurringTask(template));
-        }
-    }
-
-    if (newTasksForToday.length > 0) {
-      const addedTasks = await db.addTasks(newTasksForToday);
-       if (user) {
-          for (const task of addedTasks) {
-              await addTaskToFirestore(user.uid, task);
-          }
-       }
-    }
-    
-    await db.updateSettings({ lastOpenedDate: todayISO });
-     if (user && settings) {
-        await updateSettingsInFirestore(user.uid, {...settings, lastOpenedDate: todayISO});
-    }
-  }, [user, settings]);
-
-  // Effect to load data on initial app load, without rollover
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      try {
-        const initialSettings = await db.getSettings();
-        const today = getTodayISO(initialSettings.timezone);
-        
-        setSettings(initialSettings);
-        setCurrentDate(today);
-        await refreshTasks();
-
-      } catch (error) {
-        console.error("Error loading data:", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    loadData();
-  }, [refreshTasks]);
-
-
-  useEffect(() => {
-      if(!settings) return;
-      const checkEODTime = () => {
-          const now = new Date();
-          const eodHour = parseInt(settings.eodTime.split(':')[0], 10);
-          const eodMinute = parseInt(settings.eodTime.split(':')[1], 10);
-          const nowInET = new Date(now.toLocaleString('en-US', {timeZone: settings.timezone}));
-          setIsEODReady(nowInET.getHours() >= eodHour && nowInET.getMinutes() >= eodMinute);
-      };
-      checkEODTime();
-      const interval = setInterval(checkEODTime, 60000);
-      return () => clearInterval(interval);
-  }, [settings]);
-  
-  const resetAutosaveTimer = useCallback(() => {
-      if (autosaveIntervalRef.current) {
-          clearInterval(autosaveIntervalRef.current);
-      }
-      const AUTOSAVE_INTERVAL = 60 * 60 * 1000; // 1 hour
-      autosaveIntervalRef.current = window.setInterval(() => {
-          console.log('Auto-saving data via download...');
-          exportData('leafology-autosave');
-      }, AUTOSAVE_INTERVAL);
-  }, []);
-
-  useEffect(() => {
-      resetAutosaveTimer();
-      return () => {
-          if (autosaveIntervalRef.current) {
-              clearInterval(autosaveIntervalRef.current);
-          }
-      };
-  }, [resetAutosaveTimer]);
-
-  const handleManualSave = async () => {
-      await exportData('leafology-manual-save');
-      resetAutosaveTimer();
-      // Consider adding a visual confirmation for the user
-  };
-
-  const handleRefreshAndRollover = async () => {
-    if (!settings) return;
-    setIsLoading(true);
-    try {
-      const today = getTodayISO(settings.timezone);
-      await handleRollover(today, settings);
-      
-      const latestSettings = await db.getSettings();
-      setSettings(latestSettings);
-      
-      await refreshTasks();
-    } catch (error)      {
-      console.error("Error during manual refresh:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleAddTask = async (
-    title: string,
-    category: Category,
-    taskType: TaskType,
-    priority: Priority,
-    schedule?: { daysOfWeek?: number[]; dayOfMonth?: number },
-    taskDate?: string,
-    earlyReminder?: boolean
-) => {
-    if (title.trim() === '') return;
-    
-    const isRecurring = ['everyday', 'weekly', 'monthly'].includes(taskType);
-    // Recurring templates get a blank date to hide them from daily views.
-    const dateForBaseTask = isRecurring ? '' : (taskDate || currentDate);
-    
-    const baseTask: Omit<Task, 'id' | 'originId' | 'projectId'> = {
-      date: dateForBaseTask,
-      title: title.trim(),
-      category: category,
-      status: 'todo',
-      disposition: 'normal',
-      priority: priority,
-      includeInEOD: false,
-      starred: false,
-      asks: false,
-      comments: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      taskType: taskType,
-      daysOfWeek: schedule?.daysOfWeek,
-      dayOfMonth: schedule?.dayOfMonth,
-      earlyReminder: earlyReminder || false,
-    };
-
-    // This creates either a one-time task or a recurring template.
-    const primaryTask = await db.addTask(baseTask, isRecurring, taskType === 'project');
-    if (user) {
-        await addTaskToFirestore(user.uid, primaryTask);
-    }
-
-    let taskToFocus: Task | null = isRecurring ? null : primaryTask;
-
-    // If a recurring task was created, check if an instance is needed for today.
-    if (isRecurring) {
-        const today = new Date(currentDate + 'T00:00:00');
-        const dayOfWeek = today.getDay();
-        const dayOfMonth = today.getDate();
-        const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-
-        let shouldCreateForToday = false;
-        if (taskType === 'everyday') {
-            shouldCreateForToday = true;
-        } else if (taskType === 'weekly' && schedule?.daysOfWeek?.includes(dayOfWeek)) {
-            shouldCreateForToday = true;
-        } else if (taskType === 'monthly' && schedule?.dayOfMonth) {
-            const scheduledDay = schedule.dayOfMonth;
-            shouldCreateForToday = (scheduledDay === dayOfMonth) || (dayOfMonth === lastDayOfMonth && scheduledDay > lastDayOfMonth);
-        }
-
-        if (shouldCreateForToday) {
-            // primaryTask is the template here. It has originId === id.
-            const { id, ...templateData } = primaryTask; 
-            const instanceData: Omit<Task, 'id'> = {
-                ...templateData,
-                date: currentDate, // Set instance date to today
-                // Reset transient properties for the new instance
-                status: 'todo',
-                disposition: 'normal',
-                comments: [],
-                starred: false,
-                asks: false,
-                includeInEOD: false,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            };
-            
-            // Create the instance. isRecurring is false so a *new* originId is not created.
-            const instanceTask = await db.addTask(instanceData, false, false); 
-            if (user) {
-                await addTaskToFirestore(user.uid, instanceTask);
-            }
-            taskToFocus = instanceTask; // We want to focus the new instance for today.
-        }
-    }
-    
-    await refreshTasks();
-    if (taskToFocus) {
-      setFocusedTaskId(taskToFocus.id);
-    }
-  };
-
-  const handleAddMultipleTasks = async (tasksToAdd: { title: string; category: Category }[]) => {
-    const now = new Date().toISOString();
-    const newTasksData: Omit<Task, 'id'>[] = tasksToAdd.map(({ title, category }) => ({
-      date: currentDate,
-      title,
-      category,
-      status: 'todo' as Status,
-      disposition: 'normal',
-      priority: 'medium' as Priority,
-      includeInEOD: false,
-      starred: false,
-      asks: false,
-      comments: [],
-      createdAt: now,
-      updatedAt: now,
-      taskType: 'one-time' as TaskType,
-    }));
-
-    const addedTasks = await db.addTasks(newTasksData);
-    if (user) {
-      for (const task of addedTasks) {
-        await addTaskToFirestore(user.uid, task);
-      }
-    }
-    await refreshTasks();
-  };
-
-  const handleCreateProject = async ({ projectTitle, tasks: taskTitles, category, priority }: { projectTitle: string, tasks: string[], category: Category, priority: Priority }) => {
-      if (!projectTitle.trim() || taskTitles.length === 0) return;
-
-      const now = new Date().toISOString();
-      const totalTasks = taskTitles.length;
-
-      const newTasksData: Omit<Task, 'id'>[] = taskTitles.map((title, index) => ({
-          date: index === 0 ? currentDate : '',
-          title: `${projectTitle} - ${title}`,
-          category: category || 'Ownership',
-          status: 'todo',
-          disposition: 'normal',
-          priority: priority || 'medium',
-          includeInEOD: true,
-          starred: index === 0,
-          asks: false,
-          comments: index === 0 ? [{ ts: now, text: `Project '${projectTitle}' initiated via AI Planner.` }] : [],
-          createdAt: now,
-          updatedAt: now,
-          taskType: 'project',
-          projectTaskOrder: index,
-          totalProjectTasks: totalTasks,
-      }));
-      
-      const createdTasks = await db.addProjectTasks(newTasksData);
-      if (user) {
-          for (const task of createdTasks) {
-              await addTaskToFirestore(user.uid, task);
-          }
-      }
-      await refreshTasks();
-      if (createdTasks.length > 0) {
-          setFocusedTaskId(createdTasks[0].id);
-      }
-  };
-  
-  const handleUpdateTask = async (id: string, changes: Partial<Task>) => {
-    const task = tasks.find(t => t.id === id);
-    if (!task) return;
-
-    const isTemplateProperty = 'title' in changes || 'category' in changes || 'priority' in changes;
-    const isRecurringInstance = !!(task.originId && task.id !== task.originId);
-
-    if (isRecurringInstance && isTemplateProperty) {
-      setEditRecurringState({ task, changes });
-    } else {
-      await db.updateTask(id, changes);
-       if (user) {
-          const updatedTask = { ...task, ...changes, updatedAt: new Date().toISOString() };
-          await updateTaskInFirestore(user.uid, updatedTask);
-          if (changes.disposition === 'retired') {
-            await deleteTaskInFirestore(user.uid, id);
-          }
-      }
-
-      if (task.taskType === 'project' && changes.status === 'done') {
-          const nextOrder = (task.projectTaskOrder ?? -1) + 1;
-          if (nextOrder < (task.totalProjectTasks ?? 0)) {
-              await db.activateNextProjectTask(task.projectId!, nextOrder, currentDate);
-              // Also sync this activation
-              if(user){
-                  const allTasks = await db.getAllTasks();
-                  const nextTask = allTasks.find(t => t.projectId === task.projectId && t.projectTaskOrder === nextOrder);
-                  if(nextTask) await updateTaskInFirestore(user.uid, nextTask);
-              }
-          }
-      }
-      await refreshTasks();
-    }
-  };
-
-  const executeRecurringUpdate = async (scope: 'single' | 'future') => {
-    if (!editRecurringState) return;
-    const { task, changes } = editRecurringState;
-
-    // Always update the current instance to immediately reflect the change
-    await db.updateTask(task.id, changes);
-    const updatedTask = { ...task, ...changes, updatedAt: new Date().toISOString() };
-
-    if (user) {
-      await updateTaskInFirestore(user.uid, updatedTask);
-    }
-
-    if (scope === 'future') {
-        // If applying to future tasks, update the template as well
-        await db.updateRecurringTemplate(task.originId!, changes);
-        if(user){
-            const allTasks = await db.getAllTasks();
-            const templateTask = allTasks.find(t => t.id === task.originId);
-            if(templateTask) await updateTaskInFirestore(user.uid, templateTask);
-        }
-    }
-    
-    setEditRecurringState(null);
-    await refreshTasks();
-  };
-
-  const handleSaveSettings = async (newSettings: Settings) => {
-    await db.updateSettings({ kpis: newSettings.kpis });
-    const latestSettings = await db.getSettings();
-    setSettings(latestSettings);
-     if (user) {
-        await updateSettingsInFirestore(user.uid, latestSettings);
-    }
-  }
-
-  const handleAddTaskFromAI = async (suggestion: AISuggestedTask) => {
-    // Add more robust validation based on the task type.
-    if (suggestion.taskType === 'project') {
-        if (suggestion.projectTitle && suggestion.steps && suggestion.category && suggestion.priority) {
-            await handleCreateProject({
-                projectTitle: suggestion.projectTitle,
-                tasks: suggestion.steps,
-                category: suggestion.category,
-                priority: suggestion.priority,
-            });
-        } else {
-            console.error("Invalid AI project suggestion: missing required fields.", suggestion);
-            alert("Sorry, the AI suggestion for the project was incomplete.");
-        }
-    } else if (suggestion.title && suggestion.taskType && suggestion.category && suggestion.priority) {
-        await handleAddTask(
-            suggestion.title,
-            suggestion.category,
-            suggestion.taskType,
-            suggestion.priority, // No default needed as it's checked
-            {
-                daysOfWeek: suggestion.daysOfWeek,
-                dayOfMonth: suggestion.dayOfMonth,
-            },
-            suggestion.date,
-            suggestion.earlyReminder
-        );
-    } else {
-        console.error("Invalid AI suggestion received:", suggestion);
-        alert("Sorry, there was an issue adding the task from the AI suggestion. It might be incomplete.");
-    }
-  };
-  
-  const handleTaskClick = (taskId: string) => {
-    setFocusedTaskId(taskId);
-    setDetailedTaskId(taskId);
-  };
-  
-  const handleStartAIHelper = (task: Task) => {
-    setHelperTask(task);
-  };
-  
-  useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      const activeEl = document.activeElement;
-      if (activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes(activeEl.tagName)) return;
-      
-      if(e.key === 'n' || e.key === 'N') { e.preventDefault(); setShowAddTaskModal(true); }
-      if(e.key === '/') { e.preventDefault(); searchInputRef.current?.focus(); }
-      if (e.key === 'Escape') {
-          if (detailedTaskId) {
-              setDetailedTaskId(null);
-          }
-      }
-
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
-        e.preventDefault();
-        setShowEODModal(true);
-        setTimeout(() => document.getElementById('copy-eod-button')?.click(), 100);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        e.preventDefault();
-        setShowEODModal(true);
-        setTimeout(() => document.getElementById('email-eod-button')?.click(), 100);
-      }
-    };
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [detailedTaskId]);
-
-
-  const sortedAndFilteredTasks = useMemo(() => {
-    if (!currentDate) return [];
-
-    const priorityValue: Record<Priority, number> = { high: 3, medium: 2, low: 1 };
-
-    let baseTasks = tasks
-      .filter(t => t.disposition !== 'retired' && t.disposition !== 'ignored' && t.disposition !== 'muted')
-      // Hides recurring task templates from the daily view.
-      .filter(t => !t.originId || t.id !== t.originId)
-      .filter(t => t.title.toLowerCase().includes(filter.toLowerCase()));
-
-    // Apply active filters
-    const extendedStatuses = activeFilters.statuses;
-    const dateFilters = extendedStatuses.filter(s => ['today', 'tomorrow', 'this week'].includes(s));
-    const normalStatusFilters = extendedStatuses.filter(s => STATUSES.includes(s as Status));
-    const typeFilters = extendedStatuses.filter(s => ['project step'].includes(s));
-
-    const todayISO = currentDate;
-    const today = new Date(todayISO + 'T00:00:00');
-    const tomorrow = new Date(today);
-    tomorrow.setDate(today.getDate() + 1);
-    const tomorrowISO = tomorrow.toISOString().split('T')[0];
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay());
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    const startOfWeekISO = startOfWeek.toISOString().split('T')[0];
-    const endOfWeekISO = endOfWeek.toISOString().split('T')[0];
-
-    let result = baseTasks.filter(task => {
-        const dateMatch = dateFilters.length === 0 ? true : dateFilters.some(f => {
-            if (f === 'today') return task.date === todayISO;
-            if (f === 'tomorrow') return task.date === tomorrowISO;
-            if (f === 'this week') return task.date && task.date >= startOfWeekISO && task.date <= endOfWeekISO;
-            return false;
-        });
-
-        const statusMatch = normalStatusFilters.length === 0 ? true : normalStatusFilters.includes(task.status);
-        
-        const typeMatch = typeFilters.length === 0 ? true : typeFilters.some(f => {
-            if (f === 'project step') return task.taskType === 'project';
-            return false;
-        });
-
-        return dateMatch && statusMatch && typeMatch;
-    });
-
-    if (activeFilters.categories.length > 0) {
-      result = result.filter(t => activeFilters.categories.includes(t.category));
-    }
-    if (activeFilters.priorities.length > 0) {
-      result = result.filter(t => activeFilters.priorities.includes(t.priority || 'medium'));
-    }
-
-    // Apply sorting
-    result.sort((a, b) => {
-      let comparison = 0;
-      const aPriority = a.priority || 'medium';
-      const bPriority = b.priority || 'medium';
-
-      if (sortConfig.key === 'createdAt') {
-        comparison = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      } else if (sortConfig.key === 'priority') {
-        comparison = priorityValue[bPriority] - priorityValue[aPriority];
-      }
-      
-      return sortConfig.direction === 'asc' ? -comparison : comparison;
-    });
-
-    return result;
-  }, [tasks, filter, currentDate, activeFilters, sortConfig]);
-  
-  const detailedTask = useMemo(() => {
-    if (!detailedTaskId) return null;
-    return tasks.find(t => t.id === detailedTaskId) || null;
-  }, [detailedTaskId, tasks]);
-
-  const tasksForToday = useMemo(() => {
-    return tasks.filter(t => t.date === currentDate && t.disposition !== 'retired' && t.disposition !== 'ignored' && (!t.originId || t.id !== t.originId));
-  }, [tasks, currentDate]);
-
-
-  if (isLoading) {
-    return <div className="flex h-screen items-center justify-center">Loading...</div>;
-  }
-
-  return (
-    <div className="max-w-4xl mx-auto p-4 font-sans">
-      <header className="flex justify-between items-center mb-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800">Leafology</h1>
-          {/* FIX: Corrected typo from `toLocaleDate` to `toLocaleDateString` and fixed syntax for the method call. */}
-          <p className="text-gray-500">{currentDate ? new Date(currentDate+'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '\u00A0'}</p>
-        </div>
-        <div className="flex items-center space-x-2">
-            <button
-                onClick={handleRefreshAndRollover}
-                className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded-full"
-                aria-label="Refresh and carry over tasks"
-            >
-              <RefreshIcon className="w-6 h-6"/>
-            </button>
-            <button 
-                onClick={() => setShowEODModal(true)} 
-                className={`flex items-center space-x-2 px-4 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-opacity-75 ${isEODReady ? 'animate-pulse' : ''}`}
-            >
-               <EODIcon className="w-4 h-4" />
-               <span>Generate EOD</span>
-            </button>
-            <button
-                onClick={handleManualSave}
-                className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded-full"
-                aria-label="Save data backup now"
-                title="Save data backup now"
-            >
-                <DownloadIcon className="w-6 h-6" />
-            </button>
-            <button onClick={() => setShowSettingsModal(true)} className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded-full"><SettingsIcon className="w-6 h-6"/></button>
-            <AuthDisplay user={user} isFirebaseInitialized={isFirebaseInitialized} />
-        </div>
-      </header>
-      
-      <div className="flex flex-col md:flex-row md:items-center md:space-x-2 mb-4">
-        <div className="relative flex-grow mb-2 md:mb-0">
-            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400"/>
-            <input
-                ref={searchInputRef}
-                type="text"
-                placeholder="Quick find/filter (/)"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-white rounded-lg shadow-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-        </div>
-        <FilterSortControls 
-            activeFilters={activeFilters}
-            onFilterChange={setActiveFilters}
-            sortConfig={sortConfig}
-            onSortChange={setSortConfig}
-        />
+  const diff = Math.max(0, target - now);
+  const d = Math.floor(diff / 86400000);
+  const h = Math.floor((diff % 86400000) / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  const Box: React.FC<{ n: number; l: string }> = ({ n, l }) => (
+    <div className="text-center px-3 py-2 rounded-md border border-white/10 bg-black/40 min-w-[64px]">
+      <div className="text-2xl md:text-3xl font-bold" style={{ color: PINK }}>
+        {String(n).padStart(2, '0')}
       </div>
-
-      <main className="space-y-2">
-          {sortedAndFilteredTasks.length > 0 ? (
-            sortedAndFilteredTasks.map(task => (
-              <TaskItem 
-                  key={task.id} 
-                  task={task} 
-                  onUpdate={handleUpdateTask}
-                  isFocused={focusedTaskId === task.id}
-                  onFocus={() => setFocusedTaskId(task.id)}
-                  onTaskClick={handleTaskClick}
-                  currentDate={currentDate}
-                  onStartAIHelper={handleStartAIHelper}
-              />
-            ))
-          ) : (
-            tasksForToday.length === 0 ? (
-              <GettingStartedCard onAddTasks={handleAddMultipleTasks} />
-            ) : (
-              <div className="text-center py-10 text-gray-500">
-                <p>No tasks match your current filters.</p>
-                <p className="text-sm">Try adjusting your filter settings.</p>
-              </div>
-            )
-          )}
-      </main>
-
-      <footer className="mt-4 flex items-stretch space-x-2">
-          <button onClick={() => setShowAddTaskModal(true)} className="w-1/3 flex items-center justify-center space-x-2 px-4 py-3 bg-purple-600 text-white rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-opacity-75 font-semibold">
-              <PlusIcon className="w-5 h-5"/>
-              <span>New Task (N)</span>
-          </button>
-          <button onClick={() => setShowNewProjectModal(true)} className="w-1/3 flex items-center justify-center space-x-2 px-4 py-3 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-opacity-75 font-semibold">
-              <ProjectIcon className="w-5 h-5" />
-              <span>New Project</span>
-          </button>
-           <button onClick={() => setShowNewIdeaModal(true)} className="w-1/3 flex items-center justify-center space-x-2 px-4 py-3 bg-teal-600 text-white rounded-lg shadow-md hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-400 focus:ring-opacity-75 font-semibold">
-              <LightbulbIcon className="w-5 h-5" />
-              <span>New Idea</span>
-          </button>
-      </footer>
-
-      {showAddTaskModal && <AddTaskModal onAddTask={handleAddTask} onClose={() => setShowAddTaskModal(false)} />}
-      {showNewIdeaModal && <NewIdeaModal onClose={() => setShowNewIdeaModal(false)} />}
-      {showNewProjectModal && <NewProjectModal onClose={() => setShowNewProjectModal(false)} onCreateProject={handleCreateProject} />}
-      {showEODModal && settings && <EODModal tasks={tasks.filter(t => t.date === currentDate)} settings={settings} date={currentDate} onClose={() => setShowEODModal(false)} />}
-      {showSettingsModal && <SettingsModal 
-        settings={settings} 
-        onClose={() => setShowSettingsModal(false)} 
-        onSave={handleSaveSettings}
-        />}
-      {editRecurringState && <EditRecurringTaskModal 
-        onClose={() => setEditRecurringState(null)}
-        onConfirm={executeRecurringUpdate}
-      />}
-       {showAINotetakerModal && <AINotetakerModal 
-        onClose={() => setShowAINotetakerModal(false)} 
-        onAddTaskFromAI={handleAddTaskFromAI}
-        currentDate={currentDate}
-      />}
-       {detailedTask && (
-        <TaskDetailModal
-            task={detailedTask}
-            allTasks={tasks}
-            onUpdate={handleUpdateTask}
-            onClose={() => setDetailedTaskId(null)}
-        />
-       )}
-       {helperTask && (
-        <AIHelperModal
-            task={helperTask}
-            onClose={() => setHelperTask(null)}
-        />
-       )}
-      <VibeAI />
-       <button
-        onClick={() => setShowAINotetakerModal(true)}
-        className="fixed bottom-4 right-4 bg-teal-600 text-white p-4 rounded-full shadow-lg hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-400 focus:ring-opacity-75 z-40"
-        aria-label="Open AI Notetaker"
-      >
-        <SparklesIcon className="w-6 h-6" />
-      </button>
+      <div className="text-[10px] uppercase tracking-widest text-gray-400">{l}</div>
+    </div>
+  );
+  return (
+    <div className="flex gap-2 md:gap-3 flex-wrap">
+      <Box n={d} l="days" />
+      <Box n={h} l="hrs" />
+      <Box n={m} l="min" />
+      <Box n={s} l="sec" />
     </div>
   );
 };
 
-export default App;
+// ---------- Strategy Builder ----------
+type Loyalist = { tier: string; reward: string; date: string; copy: string };
+type Regular = { threshold: number; reward: number; categories: string; date: string };
+type Newcust = { discount: number; signupReward: string; followup: string };
+
+const Strategy: React.FC<{
+  loyal: Loyalist; setLoyal: (v: Loyalist) => void;
+  reg: Regular; setReg: (v: Regular) => void;
+  neu: Newcust; setNeu: (v: Newcust) => void;
+}> = ({ loyal, setLoyal, reg, setReg, neu, setNeu }) => {
+  const [tab, setTab] = useState<'A' | 'B' | 'C'>('A');
+  const TabBtn: React.FC<{ id: 'A' | 'B' | 'C'; label: string }> = ({ id, label }) => (
+    <button
+      onClick={() => setTab(id)}
+      className="px-4 py-2 text-sm font-semibold uppercase tracking-wider border-b-2 transition"
+      style={tab === id ? { borderColor: PINK, color: PINK } : { borderColor: 'transparent', color: '#6b7280' }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <>
+      <div className="flex gap-2 border-b border-white/10 mb-5 flex-wrap">
+        <TabBtn id="A" label="Loyalists / High-Value" />
+        <TabBtn id="B" label="Regulars / Mid-Tier" />
+        <TabBtn id="C" label="New / Occasional" />
+      </div>
+
+      {tab === 'A' && (
+        <div>
+          <p className="text-sm text-gray-400 mb-4 border-l-2 pl-3" style={{ borderColor: CYAN }}>
+            <strong className="text-gray-200">Strategy:</strong> Exclusivity over discount. Early access, limited
+            drops, VIP event invites. No blanket % off.
+          </p>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Loyalty Tier Name</label>
+              <input className={inputCls} value={loyal.tier} onChange={(e) => setLoyal({ ...loyal, tier: e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Reward Type</label>
+              <select className={inputCls} value={loyal.reward} onChange={(e) => setLoyal({ ...loyal, reward: e.target.value })}>
+                <option>early access</option>
+                <option>exclusive bundle</option>
+                <option>points multiplier</option>
+                <option>VIP event</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Activation Date</label>
+              <input type="date" className={inputCls} value={loyal.date} onChange={(e) => setLoyal({ ...loyal, date: e.target.value })} />
+            </div>
+            <div className="md:col-span-2">
+              <label className={labelCls}>Message Copy</label>
+              <textarea rows={2} className={inputCls} value={loyal.copy} onChange={(e) => setLoyal({ ...loyal, copy: e.target.value })} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'B' && (
+        <div>
+          <p className="text-sm text-gray-400 mb-4 border-l-2 pl-3" style={{ borderColor: CYAN }}>
+            <strong className="text-gray-200">Strategy:</strong> Moderate tiered deals. Spend-threshold unlocks.
+            Incentivize AoV growth.
+          </p>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Spend Threshold ($)</label>
+              <input type="number" className={inputCls} value={reg.threshold} onChange={(e) => setReg({ ...reg, threshold: +e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Reward Amount ($ off)</label>
+              <input type="number" className={inputCls} value={reg.reward} onChange={(e) => setReg({ ...reg, reward: +e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Categories Eligible</label>
+              <input className={inputCls} value={reg.categories} onChange={(e) => setReg({ ...reg, categories: e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Activation Date</label>
+              <input type="date" className={inputCls} value={reg.date} onChange={(e) => setReg({ ...reg, date: e.target.value })} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'C' && (
+        <div>
+          <p className="text-sm text-gray-400 mb-4 border-l-2 pl-3" style={{ borderColor: CYAN }}>
+            <strong className="text-gray-200">Strategy:</strong> Traffic conversion. First-visit offer, loyalty
+            sign-up incentive, post-visit follow-up.
+          </p>
+          <div className="grid md:grid-cols-3 gap-4">
+            <div>
+              <label className={labelCls}>First-Visit Discount %</label>
+              <input type="number" className={inputCls} value={neu.discount} onChange={(e) => setNeu({ ...neu, discount: +e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Loyalty Sign-Up Reward</label>
+              <input className={inputCls} value={neu.signupReward} onChange={(e) => setNeu({ ...neu, signupReward: e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Follow-Up Timing</label>
+              <select className={inputCls} value={neu.followup} onChange={(e) => setNeu({ ...neu, followup: e.target.value })}>
+                <option>3 days post-visit</option>
+                <option>5 days post-visit</option>
+                <option>7 days post-visit</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+// ---------- Calendar ----------
+type DayEntry = {
+  date: string;
+  label: string;
+  theme: string;
+  promo: string;
+  segments: { loyal: boolean; reg: boolean; neu: boolean };
+  channels: { sms: boolean; email: boolean; instore: boolean; weedmaps: boolean; google: boolean };
+  notes: string;
+};
+
+const PROMO_OPTIONS = ['early access', 'tiered deal', 'flat discount', 'BOGO', 'event', 'no promo'];
+
+const defaultCalendar: DayEntry[] = [
+  {
+    date: '2026-04-16', label: 'Wed 4/16',
+    theme: 'Event kickoff — VIP early access',
+    promo: 'early access',
+    segments: { loyal: true, reg: false, neu: false },
+    channels: { sms: true, email: true, instore: false, weedmaps: false, google: false },
+    notes: 'Loyalist-only soft open. No public promotion.',
+  },
+  {
+    date: '2026-04-17', label: 'Thu 4/17',
+    theme: 'Loyalty multiplier activation',
+    promo: 'event',
+    segments: { loyal: true, reg: true, neu: false },
+    channels: { sms: true, email: true, instore: true, weedmaps: false, google: false },
+    notes: '2x points day for enrolled members.',
+  },
+  {
+    date: '2026-04-18', label: 'Sat 4/18',
+    theme: 'High-AoV tiered deal',
+    promo: 'tiered deal',
+    segments: { loyal: true, reg: true, neu: false },
+    channels: { sms: true, email: true, instore: true, weedmaps: true, google: false },
+    notes: 'Spend $75 → $15 off. Protect margin.',
+  },
+  {
+    date: '2026-04-19', label: 'Sun 4/19',
+    theme: 'Peak pre-day — best inventory featured',
+    promo: 'no promo',
+    segments: { loyal: true, reg: true, neu: true },
+    channels: { instore: true, weedmaps: true, email: false, sms: false, google: true },
+    notes: 'No deep discounting. Highlight premium SKUs.',
+  },
+  {
+    date: '2026-04-20', label: 'Mon 4/20',
+    theme: 'Full celebration — broadest promo',
+    promo: 'flat discount',
+    segments: { loyal: true, reg: true, neu: true },
+    channels: { sms: true, email: true, instore: true, weedmaps: true, google: true },
+    notes: 'New customer focus. Capture contact info at POS.',
+  },
+  {
+    date: '2026-04-21', label: 'Tue 4/21',
+    theme: 'Post-event retention — loyalty re-engagement',
+    promo: 'event',
+    segments: { loyal: true, reg: true, neu: false },
+    channels: { sms: true, email: true, instore: false, weedmaps: false, google: false },
+    notes: 'Thank-you + next reward preview.',
+  },
+  {
+    date: '2026-04-22', label: 'Wed 4/22',
+    theme: 'Follow-up with new 4/20 customers',
+    promo: 'event',
+    segments: { loyal: false, reg: false, neu: true },
+    channels: { sms: true, email: true, instore: false, weedmaps: false, google: false },
+    notes: 'Loyalty enrollment push. Review ask.',
+  },
+];
+
+const Calendar: React.FC<{ days: DayEntry[]; setDays: (d: DayEntry[]) => void }> = ({ days, setDays }) => {
+  const update = (i: number, patch: Partial<DayEntry>) => {
+    const next = [...days];
+    next[i] = { ...next[i], ...patch };
+    setDays(next);
+  };
+  const Chk: React.FC<{ checked: boolean; onChange: () => void; label: string }> = ({ checked, onChange, label }) => (
+    <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+      <input type="checkbox" checked={checked} onChange={onChange} className="accent-[#FF2D78]" />
+      {label}
+    </label>
+  );
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      {days.map((day, i) => (
+        <div key={day.date} className="border border-white/10 rounded-lg p-4 bg-black/30">
+          <div className="flex items-center justify-between mb-3">
+            <div className="font-bold text-sm uppercase tracking-wider" style={{ color: PINK }}>
+              {day.label}
+            </div>
+            <div className="text-[10px] text-gray-500">{day.date}</div>
+          </div>
+          <div className="space-y-3">
+            <div>
+              <label className={labelCls}>Theme / Headline</label>
+              <input className={inputCls} value={day.theme} onChange={(e) => update(i, { theme: e.target.value })} />
+            </div>
+            <div>
+              <label className={labelCls}>Promotion Type</label>
+              <select className={inputCls} value={day.promo} onChange={(e) => update(i, { promo: e.target.value })}>
+                {PROMO_OPTIONS.map((p) => <option key={p}>{p}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Segments</label>
+              <div className="flex gap-3 flex-wrap">
+                <Chk checked={day.segments.loyal} onChange={() => update(i, { segments: { ...day.segments, loyal: !day.segments.loyal } })} label="Loyalist" />
+                <Chk checked={day.segments.reg} onChange={() => update(i, { segments: { ...day.segments, reg: !day.segments.reg } })} label="Regular" />
+                <Chk checked={day.segments.neu} onChange={() => update(i, { segments: { ...day.segments, neu: !day.segments.neu } })} label="New" />
+              </div>
+            </div>
+            <div>
+              <label className={labelCls}>Channels</label>
+              <div className="flex gap-3 flex-wrap">
+                <Chk checked={day.channels.sms} onChange={() => update(i, { channels: { ...day.channels, sms: !day.channels.sms } })} label="SMS" />
+                <Chk checked={day.channels.email} onChange={() => update(i, { channels: { ...day.channels, email: !day.channels.email } })} label="Email" />
+                <Chk checked={day.channels.instore} onChange={() => update(i, { channels: { ...day.channels, instore: !day.channels.instore } })} label="In-store" />
+                <Chk checked={day.channels.weedmaps} onChange={() => update(i, { channels: { ...day.channels, weedmaps: !day.channels.weedmaps } })} label="Weedmaps" />
+                <Chk checked={day.channels.google} onChange={() => update(i, { channels: { ...day.channels, google: !day.channels.google } })} label="Google" />
+              </div>
+            </div>
+            <div>
+              <label className={labelCls}>Notes</label>
+              <textarea rows={2} className={inputCls} value={day.notes} onChange={(e) => update(i, { notes: e.target.value })} />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ---------- Guardrails Calculator ----------
+type Calc = {
+  atv: number; tx: number;
+  pctLoyal: number; pctReg: number; pctNew: number;
+  discLoyal: number; discReg: number; discNew: number;
+};
+
+const Guardrails: React.FC<{ calc: Calc; setCalc: (c: Calc) => void }> = ({ calc, setCalc }) => {
+  const up = (k: keyof Calc, v: number) => setCalc({ ...calc, [k]: v });
+  const txLoyal = calc.tx * (calc.pctLoyal / 100);
+  const txReg = calc.tx * (calc.pctReg / 100);
+  const txNew = calc.tx * (calc.pctNew / 100);
+  const revLoyal = txLoyal * calc.atv;
+  const revReg = txReg * calc.atv;
+  const revNew = txNew * calc.atv;
+  const gross = revLoyal + revReg + revNew;
+  const disc = revLoyal * (calc.discLoyal / 100) + revReg * (calc.discReg / 100) + revNew * (calc.discNew / 100);
+  const net = gross - disc;
+  const pctSum = calc.pctLoyal + calc.pctReg + calc.pctNew;
+  const fmt = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+
+  return (
+    <div className="grid md:grid-cols-2 gap-6">
+      <div>
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div>
+            <label className={labelCls}>Avg Transaction Value</label>
+            <input type="number" className={inputCls} value={calc.atv} onChange={(e) => up('atv', +e.target.value)} />
+          </div>
+          <div>
+            <label className={labelCls}># of 4/20 Transactions</label>
+            <input type="number" className={inputCls} value={calc.tx} onChange={(e) => up('tx', +e.target.value)} />
+          </div>
+        </div>
+        <div className="text-[11px] uppercase tracking-wider text-gray-400 mb-2 font-semibold">Segment Mix & Discounts</div>
+        <div className="space-y-3">
+          {(['Loyal', 'Reg', 'New'] as const).map((seg) => {
+            const pctKey = `pct${seg}` as keyof Calc;
+            const discKey = `disc${seg}` as keyof Calc;
+            const label = seg === 'Loyal' ? 'Loyalist' : seg === 'Reg' ? 'Regular' : 'New';
+            return (
+              <div key={seg} className="grid grid-cols-3 gap-2 items-end">
+                <div className="text-sm text-gray-300 pb-2">{label}</div>
+                <div>
+                  <label className={labelCls}>% of Tx</label>
+                  <input type="number" className={inputCls} value={calc[pctKey]} onChange={(e) => up(pctKey, +e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Discount %</label>
+                  <input type="number" className={inputCls} value={calc[discKey]} onChange={(e) => up(discKey, +e.target.value)} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {pctSum !== 100 && (
+          <p className="text-xs text-yellow-400 mt-2">Segment % totals {pctSum}% (should sum to 100).</p>
+        )}
+      </div>
+      <div className="border border-white/10 rounded-lg p-4 bg-black/30">
+        <div className="text-[11px] uppercase tracking-wider text-gray-400 mb-3 font-semibold">Output</div>
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between"><span className="text-gray-400">Gross Revenue</span><span className="font-semibold">{fmt(gross)}</span></div>
+          <div className="flex justify-between"><span className="text-gray-400">Discounts Given</span><span className="font-semibold" style={{ color: PINK }}>−{fmt(disc)}</span></div>
+          <div className="flex justify-between border-t border-white/10 pt-2"><span className="text-gray-300">Net Revenue</span><span className="font-bold" style={{ color: CYAN }}>{fmt(net)}</span></div>
+          <div className="h-px bg-white/10 my-2" />
+          <div className="flex justify-between text-xs"><span className="text-gray-500">Loyalist rev</span><span>{fmt(revLoyal)}</span></div>
+          <div className="flex justify-between text-xs"><span className="text-gray-500">Regular rev</span><span>{fmt(revReg)}</span></div>
+          <div className="flex justify-between text-xs"><span className="text-gray-500">New rev</span><span>{fmt(revNew)}</span></div>
+        </div>
+        {calc.discLoyal > 10 && (
+          <div className="mt-4 border border-pink-500/50 rounded-md p-3 text-xs" style={{ background: 'rgba(255,45,120,0.1)', color: PINK }}>
+            ⚠ You're leaving money on the table — these customers don't need this.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ---------- Retention Checklist ----------
+const CHECKLIST = [
+  'Export new customer list from Alpine IQ / Dutchie',
+  'Segment: first-timers vs. lapsed regulars',
+  'Send Day 3 re-engagement SMS (loyalty enrollment CTA)',
+  'Send Day 7 follow-up with "how\'d you like it?" + review ask',
+  'Flag any new loyalty enrollees for first-tier milestone push',
+  'Review 4/20 AoV by segment vs. prior year',
+  'Brief team debrief — what held margin, what didn\'t',
+];
+
+// ---------- Main App ----------
+export default function App() {
+  const [loyal, setLoyal] = useState<Loyalist>({
+    tier: 'Leaf Circle',
+    reward: 'early access',
+    date: '2026-04-16',
+    copy: 'Leaf Circle: doors open 4/16 at 9am. Limited drops, your pick first.',
+  });
+  const [reg, setReg] = useState<Regular>({
+    threshold: 75, reward: 15, categories: 'Flower, Pre-rolls, Edibles', date: '2026-04-18',
+  });
+  const [neu, setNeu] = useState<Newcust>({
+    discount: 15, signupReward: '$10 off next visit on sign-up', followup: '3 days post-visit',
+  });
+  const [days, setDays] = useState<DayEntry[]>(defaultCalendar);
+  const [calc, setCalc] = useState<Calc>({
+    atv: 60, tx: 200,
+    pctLoyal: 30, pctReg: 45, pctNew: 25,
+    discLoyal: 5, discReg: 15, discNew: 20,
+  });
+  const [checked, setChecked] = useState<boolean[]>(CHECKLIST.map(() => false));
+  const [exported, setExported] = useState('');
+
+  const buildExport = () => {
+    const lines: string[] = [];
+    lines.push('420 CAMPAIGN PLAN · LEAFOLOGY 2026');
+    lines.push('White Plains, NY · 244 Main St');
+    lines.push('='.repeat(48));
+    lines.push('');
+    lines.push('-- SEGMENT STRATEGIES --');
+    lines.push(`Loyalists (${loyal.tier}): ${loyal.reward}, activates ${loyal.date}`);
+    lines.push(`  Copy: ${loyal.copy}`);
+    lines.push(`Regulars: spend $${reg.threshold} → $${reg.reward} off · ${reg.categories} · ${reg.date}`);
+    lines.push(`New: ${neu.discount}% first-visit · ${neu.signupReward} · Follow-up ${neu.followup}`);
+    lines.push('');
+    lines.push('-- CALENDAR --');
+    days.forEach((d) => {
+      const segs = [d.segments.loyal && 'Loyalist', d.segments.reg && 'Regular', d.segments.neu && 'New'].filter(Boolean).join('/');
+      const chs = Object.entries(d.channels).filter(([, v]) => v).map(([k]) => k).join(', ');
+      lines.push(`${d.label} — ${d.theme}`);
+      lines.push(`  Promo: ${d.promo} | Segments: ${segs || 'none'} | Channels: ${chs || 'none'}`);
+      if (d.notes) lines.push(`  Notes: ${d.notes}`);
+    });
+    lines.push('');
+    lines.push('-- DISCOUNT GUARDRAILS --');
+    const gross = calc.tx * calc.atv;
+    const rL = calc.tx * (calc.pctLoyal / 100) * calc.atv;
+    const rR = calc.tx * (calc.pctReg / 100) * calc.atv;
+    const rN = calc.tx * (calc.pctNew / 100) * calc.atv;
+    const disc = rL * (calc.discLoyal / 100) + rR * (calc.discReg / 100) + rN * (calc.discNew / 100);
+    lines.push(`ATV $${calc.atv} × ${calc.tx} tx`);
+    lines.push(`Mix: Loyal ${calc.pctLoyal}% / Reg ${calc.pctReg}% / New ${calc.pctNew}%`);
+    lines.push(`Disc: Loyal ${calc.discLoyal}% / Reg ${calc.discReg}% / New ${calc.discNew}%`);
+    lines.push(`Gross: $${gross.toFixed(0)} | Discounts: $${disc.toFixed(0)} | Net: $${(gross - disc).toFixed(0)}`);
+    if (calc.discLoyal > 10) lines.push('WARNING: Loyalist discount >10% — leaving margin on the table.');
+    lines.push('');
+    lines.push('-- RETENTION CHECKLIST --');
+    CHECKLIST.forEach((item, i) => lines.push(`${checked[i] ? '[x]' : '[ ]'} ${item}`));
+    setExported(lines.join('\n'));
+  };
+
+  const copyExport = async () => {
+    try { await navigator.clipboard.writeText(exported); } catch {}
+  };
+
+  return (
+    <div className="min-h-screen" style={{ background: BG }}>
+      <div className="max-w-6xl mx-auto px-4 py-8 md:py-12">
+        <header className="mb-8">
+          <div className="text-xs uppercase tracking-[0.3em] text-gray-500 mb-2">Leafology · White Plains, NY</div>
+          <h1 className="text-3xl md:text-5xl font-extrabold mb-4" style={{ color: PINK }}>
+            420 Campaign War Room · 2026
+          </h1>
+        </header>
+
+        <Card>
+          <H2>Campaign Overview</H2>
+          <div className="grid md:grid-cols-2 gap-6 items-start">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-gray-400 mb-1">Event Window</div>
+              <div className="text-lg font-semibold text-gray-100 mb-4">April 16 (Wed) → April 20 (Mon)</div>
+              <div className="text-[11px] uppercase tracking-wider text-gray-400 mb-2">Countdown to 4/20/2026</div>
+              <Countdown />
+            </div>
+            <div className="border-l-2 pl-4" style={{ borderColor: PINK }}>
+              <div className="text-[11px] uppercase tracking-wider mb-2 font-bold" style={{ color: CYAN }}>Key Insight</div>
+              <p className="text-gray-200 leading-relaxed">
+                Pre-peak (4/18–4/19) drives higher AoV than 4/20 itself. Don't sacrifice margin on your best customers.
+              </p>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <H2>Strategy Builder</H2>
+          <Strategy loyal={loyal} setLoyal={setLoyal} reg={reg} setReg={setReg} neu={neu} setNeu={setNeu} />
+        </Card>
+
+        <Card>
+          <H2>Day-by-Day Calendar</H2>
+          <Calendar days={days} setDays={setDays} />
+        </Card>
+
+        <Card>
+          <H2>Discount Guardrails</H2>
+          <Guardrails calc={calc} setCalc={setCalc} />
+        </Card>
+
+        <Card>
+          <H2>Post-420 Retention Checklist</H2>
+          <ul className="space-y-2">
+            {CHECKLIST.map((item, i) => (
+              <li key={i}>
+                <label className="flex items-start gap-3 cursor-pointer text-sm text-gray-200">
+                  <input
+                    type="checkbox"
+                    checked={checked[i]}
+                    onChange={() => { const n = [...checked]; n[i] = !n[i]; setChecked(n); }}
+                    className="mt-0.5 accent-[#FF2D78] w-4 h-4"
+                  />
+                  <span className={checked[i] ? 'line-through text-gray-500' : ''}>{item}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <Card>
+          <H2>Export</H2>
+          <div className="flex gap-3 flex-wrap mb-4">
+            <button
+              onClick={buildExport}
+              className="px-5 py-2.5 rounded-md font-bold uppercase tracking-wider text-sm text-black"
+              style={{ background: PINK }}
+            >
+              Export Plan as Text Summary
+            </button>
+            {exported && (
+              <button
+                onClick={copyExport}
+                className="px-5 py-2.5 rounded-md font-bold uppercase tracking-wider text-sm border"
+                style={{ borderColor: CYAN, color: CYAN }}
+              >
+                Copy to Clipboard
+              </button>
+            )}
+          </div>
+          {exported && (
+            <textarea
+              readOnly
+              value={exported}
+              rows={16}
+              className="w-full bg-black/60 border border-white/10 rounded-md p-3 text-xs text-gray-200 font-mono"
+            />
+          )}
+        </Card>
+
+        <footer className="text-center text-xs text-gray-600 mt-8 pb-4">
+          Leafology Cannabis Co. · CAURD Licensee · Internal planning tool
+        </footer>
+      </div>
+    </div>
+  );
+}
