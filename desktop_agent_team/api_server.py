@@ -78,6 +78,21 @@ def execute():
         logger.error(f"Task execution failed: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/agents/dutchie', methods=['POST'])
+def dutchie_api():
+    """Query the Dutchie API expert"""
+    try:
+        data = request.json
+        query = data.get('query', '')
+        if not query:
+            return jsonify({"error": "query required"}), 400
+
+        result = team.dutchie_api_task(query)
+        return jsonify({"agent": "dutchie_expert", "result": result}), 200
+    except Exception as e:
+        logger.error(f"Dutchie API query failed: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/agents/collaborate', methods=['POST'])
 def collaborate():
     """Multi-agent collaboration on complex problems"""
@@ -116,6 +131,11 @@ def list_agents():
             "name": "Task Executor",
             "endpoint": "/agents/execute",
             "description": "Execute tasks and automate workflows"
+        },
+        {
+            "name": "Dutchie API Expert",
+            "endpoint": "/agents/dutchie",
+            "description": "Map Dutchie POS API endpoints and data schemas"
         }
     ]
     return jsonify({"agents": agents}), 200

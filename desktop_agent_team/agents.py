@@ -30,6 +30,21 @@ idea_generator = Agent(
     verbose=True,
 )
 
+dutchie_expert = Agent(
+    role="Dutchie API Expert",
+    goal="Map and explain Dutchie Point of Sale API endpoints, data schemas, and integration patterns",
+    backstory="""Expert in Dutchie POS API with deep knowledge of:
+    - Products, inventory, and SKU management endpoints
+    - Customer/user account endpoints and authentication
+    - Orders, transactions, and sales data endpoints
+    - Location and store configuration endpoints
+    - Data schema mappings and field relationships
+    - Integration patterns with Weedmaps, Alpine IQ, and other platforms
+    - API authentication, rate limiting, and error handling
+    - Best practices for data extraction and processing pipelines""",
+    verbose=True,
+)
+
 @tool("get_current_time")
 def get_current_time():
     """Get the current time and date"""

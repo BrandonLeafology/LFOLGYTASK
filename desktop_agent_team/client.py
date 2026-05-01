@@ -58,6 +58,15 @@ class DesktopAgentClient:
         )
         return self._handle_response(response)
 
+    def dutchie_api(self, query):
+        """Query Dutchie API expert"""
+        response = requests.post(
+            f"{self.base_url}/agents/dutchie",
+            json={"query": query},
+            timeout=120
+        )
+        return self._handle_response(response)
+
     def list_agents(self):
         """Get list of available agents"""
         response = requests.get(f"{self.base_url}/agents/list")
@@ -98,6 +107,9 @@ def main():
     collab_parser = subparsers.add_parser("collaborate", help="Multi-agent collaboration")
     collab_parser.add_argument("problem", help="Problem to solve")
 
+    dutchie_parser = subparsers.add_parser("dutchie", help="Query Dutchie API expert")
+    dutchie_parser.add_argument("query", help="API-related question or mapping request")
+
     subparsers.add_parser("list", help="List available agents")
     subparsers.add_parser("health", help="Check if agents are running")
 
@@ -120,6 +132,9 @@ def main():
     elif args.command == "collaborate":
         print(f"Collaborating on: {args.problem}\n")
         print(client.collaborate(args.problem))
+    elif args.command == "dutchie":
+        print(f"Dutchie API Expert Query: {args.query}\n")
+        print(client.dutchie_api(args.query))
     elif args.command == "list":
         agents = client.list_agents()
         print(json.dumps(agents, indent=2))

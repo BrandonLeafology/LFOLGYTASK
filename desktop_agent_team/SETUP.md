@@ -10,7 +10,8 @@ Your Windows Desktop (always running):
 │  ├─ Research Analyst (find information)
 │  ├─ Code Reviewer (audit code)
 │  ├─ Idea Generator (brainstorm solutions)
-│  └─ Task Executor (automate work)
+│  ├─ Task Executor (automate work)
+│  └─ Dutchie API Expert (map Dutchie POS endpoints)
 └─ Flask API Server (port 5000)
 
 Your Laptop/Phone:
@@ -113,6 +114,18 @@ Install an HTTP client app (Postman, Paw, etc.) and use the same URLs.
 **POST** `/agents/execute` — Execute a task
 ```json
 {"task": "Create a Python script that downloads images from a URL"}
+```
+
+**POST** `/agents/dutchie` — Query Dutchie API expert
+```json
+{"query": "How do I get product SKUs from the Dutchie API?"}
+```
+
+Examples:
+```json
+{"query": "Map the Dutchie inventory endpoint schema"}
+{"query": "What authentication method does Dutchie API use?"}
+{"query": "How do I integrate with Dutchie for order tracking?"}
 ```
 
 **POST** `/agents/collaborate` — Multi-agent problem solving

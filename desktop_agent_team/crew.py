@@ -1,5 +1,5 @@
 from crewai import Crew, Task
-from agents import research_agent, code_reviewer, task_executor, idea_generator
+from agents import research_agent, code_reviewer, task_executor, idea_generator, dutchie_expert
 import os
 from openai import OpenAI
 
@@ -59,6 +59,26 @@ class AgentTeam:
             expected_output="Task completion report with results"
         )
         crew = Crew(agents=[task_executor], tasks=[task], verbose=True)
+        result = crew.kickoff()
+        return str(result)
+
+    def dutchie_api_task(self, query: str) -> str:
+        """Query the Dutchie API expert"""
+        task = Task(
+            description=f"""You are a Dutchie POS API expert. Answer this API-related question:
+
+{query}
+
+Provide:
+1. Relevant API endpoint(s) if applicable
+2. Data schema mappings and field relationships
+3. Authentication requirements if needed
+4. Example request/response patterns
+5. Integration considerations or caveats""",
+            agent=dutchie_expert,
+            expected_output="Detailed API mapping and integration guidance"
+        )
+        crew = Crew(agents=[dutchie_expert], tasks=[task], verbose=True)
         result = crew.kickoff()
         return str(result)
 

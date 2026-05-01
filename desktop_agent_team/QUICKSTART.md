@@ -46,6 +46,11 @@ python client.py --host 192.168.1.100 brainstorm "startup ideas using AI"
 # Execute a task
 python client.py --host 192.168.1.100 task "create a python script that fetches news"
 
+# Query Dutchie API expert
+python client.py --host 192.168.1.100 dutchie "How do I get product SKUs from the Dutchie API?"
+python client.py --host 192.168.1.100 dutchie "Map the Dutchie inventory endpoint schema"
+python client.py --host 192.168.1.100 dutchie "What's the authentication method for Dutchie API?"
+
 # Check if it's running
 python client.py --host 192.168.1.100 health
 ```
